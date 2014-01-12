@@ -8,7 +8,7 @@
       "Heiko Jansen <hjansen@cpan.org>"
    ],
    "dynamic_config" : 0,
-   "generated_by" : "Dist::Zilla version 4.300028, CPAN::Meta::Converter version 2.120921",
+   "generated_by" : "Dist::Zilla version 5.006, CPAN::Meta::Converter version 2.133380",
    "license" : [
       "gpl_2"
    ],
@@ -45,6 +45,6 @@
          "web" : "https://github.com/heikojansen/confluence-client-xmlrpc"
       }
    },
-   "version" : "2.2"
+   "version" : "2.3"
 }
 

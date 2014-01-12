@@ -1,7 +1,7 @@
 
 package Confluence::Client::XMLRPC;
 {
-  $Confluence::Client::XMLRPC::VERSION = '2.2';
+  $Confluence::Client::XMLRPC::VERSION = '2.3';
 }
 use strict;
 use warnings;
@@ -33,12 +33,12 @@ use Env qw(CONFLDEBUG);
 use Carp;
 use vars '$AUTOLOAD';    # keep 'use strict' happy
 
-our $API                  = 'confluence1';
 our $AUTO_SESSION_RENEWAL = 1;
 
 use fields qw(url user pass token client);
 
 # Global variables
+our $API        = 'confluence1';
 our $RaiseError = 1;
 our $PrintError = 0;
 our $LastError  = '';
@@ -56,6 +56,7 @@ sub _debugPrint {
 
 sub setRaiseError {
 	shift if ref $_[0];
+	shift if $_[0] eq __PACKAGE__;
 	carp "setRaiseError expected scalar"
 		unless defined $_[0] and not ref $_[0];
 	my $old = $RaiseError;
@@ -65,10 +66,26 @@ sub setRaiseError {
 
 sub setPrintError {
 	shift if ref $_[0];
+	shift if $_[0] eq __PACKAGE__;
 	carp "setPrintError expected scalar"
 		unless defined $_[0] and not ref $_[0];
 	my $old = $PrintError;
 	$PrintError = $_[0];
+	return $old;
+}
+
+sub setApiVersion {
+	shift if ref $_[0];
+	shift if $_[0] eq __PACKAGE__;
+	my $new = shift;
+	carp "setApiVersion expected scalar"
+		unless defined $new and not ref $new;
+	my $old = $API;
+
+	if ( defined($new) and $new =~ /\A(?:confluence)?([1-9])\Z/i ) {
+		$API = 'confluence' . $1;
+	}
+
 	return $old;
 }
 
@@ -101,13 +118,17 @@ sub argcopy {
 
 sub new {
 	my Confluence::Client::XMLRPC $self = shift;
-	my ( $url, $user, $pass ) = @_;
+	my ( $url, $user, $pass, $version ) = @_;
 	unless ( ref $self ) {
 		$self = fields::new($self);
 	}
 	$self->{url}  = shift;
 	$self->{user} = shift;
 	$self->{pass} = shift;
+
+	if ( defined($version) and $version =~ /\A(?:confluence)?([1-9])\Z/i ) {
+		$API = 'confluence' . $1;
+	}
 	warn "Creating client connection to $url" if $CONFLDEBUG;
 	$self->{client} = new RPC::XML::Client $url;
 	warn "Logging in $user" if $CONFLDEBUG;
@@ -137,9 +158,9 @@ sub login {
 
 sub updatePage {
 	my Confluence::Client::XMLRPC $self = shift;
-	my ($newPage)               = @_;
-	my $saveRaise               = setRaiseError(0);
-	my $result                  = $self->storePage($newPage);
+	my ($newPage)                       = @_;
+	my $saveRaise                       = setRaiseError(0);
+	my $result                          = $self->storePage($newPage);
 	setRaiseError($saveRaise);
 	if ($LastError) {
 		if ( $LastError =~ /already exists/ ) {
@@ -218,9 +239,11 @@ sub AUTOLOAD {
 
 1;
 
-
+__END__
 
 =pod
+
+=encoding UTF-8
 
 =head1 NAME
 
@@ -228,14 +251,17 @@ Confluence::Client::XMLRPC - Client for the Atlassian Confluence wiki, based on 
 
 =head1 VERSION
 
-version 2.2
+version 2.3
 
 =head1 SYNOPSIS
 
   my $object = Confluence::Client::XMLRPC->new( <URL>, <user>, <pass> );
   my $result = $object->method(argument,..);
 
-=encoding utf8
+  # Starting with version 2.3 of this module you can pass a fourth value to
+  # new, denoting the Confluence API version to use (see below).
+
+  my $object = Confluence::Client::XMLRPC->new( <URL>, <user>, <pass>, 2 );
 
 =head1 CAVEAT
 
@@ -276,8 +302,31 @@ If RaiseError is set to 0 then C<Confluence::Client::XMLRPC::lastError()> can be
   Confluence::Client::XMLRPC::setRaiseError(0);
   my $page = $wiki->getPage($space, $title);
   if ( my $e = Confluence::Client::XMLRPC::lastError() ) {
-    say $e;
+      say $e;
   }
+
+=head1 API VERSION
+
+Analogous to the global error handling flags there is a flag to 
+set the API version to use:
+
+  Confluence::Client::XMLRPC::setApiVersion($num); # set the version
+
+The C<setApiVersion> function returns the previous setting of the 
+flag so that it may be restored if necessary.
+The function accepts both plain numbers ("1" or "2") or the full
+version namespaces ("confluence1", "confluence2").
+
+The version 2 of the API was introduced with Confluence 4.0 and 
+B<Atlassian recommends to use the newer version>.
+
+However, due to backwards compatibility reasons the default value for the 
+API version in this module still is B<1>. Note: you can use B<most
+but not all> of the version 1 API calls on newer Confluence installations!
+
+For a detailed and authoritative description of the differences between 
+versions 1 and 2 of the API please refer to
+L<https://developer.atlassian.com/display/CONFDEV/Confluence+XML-RPC+and+SOAP+APIs#ConfluenceXML-RPCandSOAPAPIs-v2apiRemoteAPIversion1andversion2>!
 
 =head1 USAGE
 
@@ -334,7 +383,7 @@ Please refer to the C<examples> directory of the distribution for the scripts th
 The package uses the L<RPC::XML> module to do the heavy lifting. Read the perldoc for this package to learn more.
 
 For further information on the Confluence API itself please refer to the 
-L<official documentation|https://confluence.atlassian.com/display/DOC/Confluence+Documentation+Home> as provided
+L<official documentation|https://developer.atlassian.com/display/CONFDEV/Confluence+XML-RPC+and+SOAP+APIs> as provided
 by Atlassian.
 
 =head1 AUTHORS
@@ -365,15 +414,10 @@ Heiko Jansen <hjansen@cpan.org>
 
 =head1 COPYRIGHT AND LICENSE
 
-This software is Copyright (c) 2013 by Heiko Jansen.
+This software is Copyright (c) 2014 by Heiko Jansen.
 
 This is free software, licensed under:
 
   The GNU General Public License, Version 2, June 1991
 
 =cut
-
-
-__END__
-
-
