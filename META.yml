@@ -23,4 +23,4 @@ requires:
 resources:
   homepage: https://confluence.atlassian.com/display/DISC/Perl+XML-RPC+client
   repository: https://github.com/heikojansen/confluence-client-xmlrpc.git
-version: 2.4
+version: 2.5

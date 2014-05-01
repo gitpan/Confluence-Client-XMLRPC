@@ -1,7 +1,7 @@
 
 package Confluence::Client::XMLRPC;
 {
-  $Confluence::Client::XMLRPC::VERSION = '2.4';
+  $Confluence::Client::XMLRPC::VERSION = '2.5';
 }
 use strict;
 use warnings;
@@ -35,7 +35,7 @@ use vars '$AUTOLOAD';    # keep 'use strict' happy
 
 our $AUTO_SESSION_RENEWAL = 1;
 
-use fields qw(url user pass token client);
+use fields qw(url user pass token client _cflVersion _serverInfo);
 
 # Global variables
 our $API        = 'confluence1';
@@ -46,9 +46,9 @@ our $LastError  = '';
 # For debugging
 sub _debugPrint {
 	require Data::Dumper;
-	$Data::Dumper::Terse     = 1;
-	$Data::Dumper::Indent    = 0;
-	$Data::Dumper::Quotekeys = 0;
+	local $Data::Dumper::Terse     = 1;
+	local $Data::Dumper::Indent    = 0;
+	local $Data::Dumper::Quotekeys = 0;
 	print STDERR ( shift @_ );
 	print STDERR ( Data::Dumper::Dumper($_) . ( scalar @_ ? ', ' : '' ) ) while ( $_ = shift @_ );
 	print STDERR "\n";
@@ -99,8 +99,12 @@ sub argcopy {
 	return $arg if $depth > 1;
 	my $typ = ref $arg;
 	if ( !$typ ) {
-		if   ( $arg =~ /true|false/ and $depth == 0 ) { return new RPC::XML::boolean($arg); }
-		else                                          { return new RPC::XML::string($arg); }
+		if ( defined($arg) and ( $arg eq 'true' or $arg eq 'false' ) and $depth == 0 ) {
+			return new RPC::XML::boolean($arg);
+		}
+		else {
+			return new RPC::XML::string($arg);
+		}
 	}
 	if ( $typ eq "HASH" ) {
 		my %hash;
@@ -122,13 +126,15 @@ sub new {
 	unless ( ref $self ) {
 		$self = fields::new($self);
 	}
-	$self->{url}  = shift;
-	$self->{user} = shift;
-	$self->{pass} = shift;
+	$self->{url}  = $url;
+	$self->{user} = $user;
+	$self->{pass} = $pass;
 
+	$API = 'confluence1';
 	if ( defined($version) and $version =~ /\A(?:confluence)?([1-9])\Z/i ) {
 		$API = 'confluence' . $1;
 	}
+
 	warn "Creating client connection to $url" if $CONFLDEBUG;
 	$self->{client} = new RPC::XML::Client $url;
 	warn "Logging in $user" if $CONFLDEBUG;
@@ -146,9 +152,33 @@ sub new {
 	if ($LastError) {
 		croak $LastError if $RaiseError;
 		warn $LastError  if $PrintError;
+		$self->{token} = '';
+		return '';
 	}
-	$self->{token} = $LastError ? '' : $result;
-	return $LastError ? '' : $self;
+
+	$self->{token} = $result;
+
+	_debugPrint( "Checking Confluence server version" ) if $CONFLDEBUG;
+	my $serverInfo = _rpc( $self, 'getServerInfo' );
+	if ( !defined($serverInfo) or ref($serverInfo) ne ref({}) ) {
+		croak "Unable to determine Confluence version: aborting" if $RaiseError;
+		warn  "Unable to determine Confluence version: aborting" if $PrintError;
+		$self->{token} = '';
+		return '';
+	}
+	$self->{'_serverInfo'} = $serverInfo;
+	$self->{'_cflVersion'} = sprintf( "%03s%03s%03s", @{ $serverInfo }{ 'majorVersion', 'minorVersion', 'patchLevel' } );
+
+	# set default API version based on Confluence version (unless explicitly given)
+	unless ( defined($version) and $version =~ /\A(?:confluence)?([1-9])\Z/i ) {
+		if ( $self->{'_cflVersion'} ge '004000000' ) {
+			$API = 'confluence2';
+		}
+		else {
+			$API = 'confluence1';
+		}
+	}
+	return $self;
 } ## end sub new
 
 # login is an alias for new
@@ -156,61 +186,105 @@ sub login {
 	return new @_;
 }
 
-sub updatePage {
+sub getServerInfo {
 	my Confluence::Client::XMLRPC $self = shift;
-	my ($newPage)                       = @_;
-	my $saveRaise                       = setRaiseError(0);
-	my $result                          = $self->storePage($newPage);
-	setRaiseError($saveRaise);
-	if ($LastError) {
-		if ( $LastError =~ /already exists/ ) {
-			my $oldPage = $self->getPage( $newPage->{space}, $newPage->{title} );
-			$newPage->{id}      = $oldPage->{id};
-			$newPage->{version} = $oldPage->{version};
-			$result             = $self->storePage($newPage);
-		}
-		else {
-			croak $LastError if $RaiseError;
-			warn $LastError  if $PrintError;
-		}
+	if ($CONFLDEBUG) {
+		_debugPrint("Retrieving serverInfo from local cache");
+		_debugPrint( "Result=", $self->{'_serverInfo'} );
 	}
-	return $result;
+	return $self->{'_serverInfo'};
 }
 
-#sub updatePageAfterFetch
-## above method does no work with confluence 3.5.17 if the page already exits.
-## this version fetches the page, and updates the old page if it exists,
-## otherwise writes the new page.  RT 2/1/14.
-#{
-#      my Confluence::Client::XMLRPC $self = shift;
-#      my ($newPage)                       = @_;
-#
-#      my $saveRaise                       = setRaiseError(0);
-#
-#      my $result = "";
-#      my $oldPage = $self->getPage( $newPage->{space}, $newPage->{title} );
-#
-#      if (ref($oldPage) eq 'HASH') {
-#              if (defined($oldPage->{space}) and defined($oldPage->{title})
-#                              and $newPage->{space} eq $oldPage->{space}
-#                              and $newPage->{title} eq $oldPage->{title}
-#              )
-#              {
-#                      $newPage->{id}      = $oldPage->{id};
-#                      $newPage->{version} = $oldPage->{version};
-#                      $result             = $self->storePage($newPage);
-#              }
-#      } else {
-#              $result = $self->storePage($newPage);
-#      }
-#
-#      setRaiseError($saveRaise);
-#      if ($LastError) {
-#              croak $LastError if $RaiseError;
-#              warn $LastError  if $PrintError;
-#      }
-#      return $result;
-#}
+sub getPageSummary {
+	my Confluence::Client::XMLRPC $self = shift;
+
+	if ( $self->{'_cflVersion'} ge "004000000" ) {
+		return _rpc( $self, 'getPageSummary', @_ );
+	}
+	else {
+		# Emulate method on older Confluence versions
+		if ( my $page = _rpc( $self, 'getPage', @_ ) ) {
+			my (%data) = map { $_ => $page->{$_} } grep { /\A(?:id|parentId|permissions|space|title|url|version)\Z/ } keys %{$page};
+			return \%data;
+		}
+		else {
+			return '';
+		}
+	}
+}
+
+sub updatePage {
+	my Confluence::Client::XMLRPC $self = shift;
+	my $page                            = shift;
+	my $pageUpdateOptions               = ( shift || {} );
+
+	if ( $self->{'_cflVersion'} ge "002010000" ) {
+		_debugPrint("Using API method updatePage() for Confluence >= 2.10") if $CONFLDEBUG;
+		return _rpc( $self, 'updatePage', $page, $pageUpdateOptions );
+	}
+	else {
+		_debugPrint("Trying to emulate updatePage() for Confluence < 2.10") if $CONFLDEBUG;
+		if ( my $existingPage = $self->getPage( $page->{'id'} ) ) {
+			my %new = ();
+			foreach my $key ( keys %{$existingPage} ) {
+				$new{$key} = $existingPage->{$key};
+			}
+			foreach my $key ( keys %{$page} ) {
+				$new{$key} = $page->{$key};
+			}
+			return _rpc( $self, 'storePage', \%new );
+		}
+	}
+	return '';
+}
+
+sub updateOrStorePage {
+	my Confluence::Client::XMLRPC $self = shift;
+	my $newPage                         = shift;
+
+	my $couldUpdate = 1;
+	foreach my $field ( qw( id space title content version ) ) {
+		$couldUpdate--, last unless exists $newPage->{$field};
+	}
+
+	# do we have all necessary data for calling the updatePage method?
+	if ($couldUpdate) {
+		return $self->updatePage( $newPage, @_ );
+	}
+	elsif ( exists( $newPage->{'id'} ) ) {
+
+		# something is missing, but we might be able to get it from Confluence
+		# check if page already exists
+		my ( $raise, $print ) = ( setRaiseError(0), setPrintError(0) );
+		my $oldPage = $self->getPageSummary( $newPage->{'id'} );
+		setRaiseError($raise);
+		setPrintError($print);
+		if ( defined($oldPage) and ref($oldPage) eq ref({}) ) {
+			foreach my $key ( keys %{$newPage} ) {
+				$oldPage->{$key} = $newPage->{$key}
+			}
+			return $self->updatePage( $oldPage, @_ );
+		}
+	}
+	elsif ( exists( $newPage->{'space'} ) and exists( $newPage->{'title'} ) ) {
+
+		# can store new page with these two fields
+		# check if page already exists
+		my ( $raise, $print ) = ( setRaiseError(0), setPrintError(0) );
+		my $oldPage = $self->getPageSummary( $newPage->{'space'}, $newPage->{'title'} );
+		setRaiseError($raise);
+		setPrintError($print);
+		if ( defined($oldPage) and ref($oldPage) eq ref({}) ) {
+			foreach my $key ( keys %{$newPage} ) {
+				$oldPage->{$key} = $newPage->{$key}
+			}
+			return $self->updatePage( $oldPage, @_ );
+		}
+	}
+
+	# might as well fail...
+	return _rpc( $self, 'storePage', $newPage );
+}
 
 sub _rpc {
 	my Confluence::Client::XMLRPC $self = shift;
@@ -234,14 +308,18 @@ sub _rpc {
 		:                            "XML-RPC ERROR: Unable to connect to " . $self->{url};
 
 	_debugPrint( "Result=", $result ) if $CONFLDEBUG;
-	if ( ( $LastError =~ /InvalidSessionException/i ) && $AUTO_SESSION_RENEWAL )
-	{    # Session time-out; log back in.
+
+	if ( ( $LastError =~ /InvalidSessionException/i ) && $AUTO_SESSION_RENEWAL ) {
+
+		# Session time-out; log back in.
 		warn "SESSION EXPIRED: Reconnecting...\n" if $PrintError;
-		my $pass = $self->{pass};
+		my ( $url, $user, $pass ) = ( $self->{url}, $self->{user}, $self->{pass} );
 		$self->{pass} = '';    # Prevent repeated attempts.
-		my $clone = Confluence::Client::XMLRPC->new( $self->{url}, $self->{user}, $pass );
-		if ($clone) {
-			$self->{token} = $clone->{token};
+		if ( my $clone = Confluence::Client::XMLRPC->new( $url, $user, $pass, $API ) ) {
+			$self->{token}         = $clone->{token};
+			$self->{'_cflVersion'} = $clone->{'_cflVersion'};
+			$self->{'_serverInfo'} = $clone->{'_serverInfo'};
+
 			$result = _rpc( $self, $method, @_ );
 			$self->{pass} = $pass;
 		}
@@ -286,24 +364,125 @@ Confluence::Client::XMLRPC - Client for the Atlassian Confluence wiki, based on 
 
 =head1 VERSION
 
-version 2.4
+version 2.5
 
 =head1 SYNOPSIS
 
-  my $object = Confluence::Client::XMLRPC->new( <URL>, <user>, <pass> );
-  my $result = $object->method(argument,..);
+  my $wiki   = Confluence::Client::XMLRPC->new( <URL>, <user>, <pass> );
+  # my $result = $object->method(argument,..);
 
-  # Starting with version 2.3 of this module you can pass a fourth value to
-  # new, denoting the Confluence API version to use (see below).
+  my $newPage = {
+      space => 'ds',
+      title => 'Sample Page',
+      content => '...',
+  }
+  my $page = $wiki->storePage($newPage);
 
-  my $object = Confluence::Client::XMLRPC->new( <URL>, <user>, <pass>, 2 );
+  $page->{'content'} .= 'updated!';
+  $page = $wiki->updatePage( $page, { versionComment => 'added text' } );
+
+  $wiki->removePage( $page->{'id'} );
 
 =head1 METHODS
 
-All method calls are simply mapped (via C<AUTOLOAD>) to RPC method calls.
-Please refer to 
-L<the official list of available methods|https://developer.atlassian.com/display/CONFDEV/Remote+Confluence+Methods>
+=over 4
+
+=item C<new ( URL, USER, PASS [, API_VERSION ] )>
+
+Creates a new instance object and establishes a session with the server.
+Returns an empty value on failure or C<croak>s if setRaiseError is true.
+
+Starting with v2.3 you may pass in the API version to use.
+
+Starting with v2.5 the newest API version available for the Confluence 
+server in use will automatically be chosen unless the API version is 
+explicitly passed in. Unlike before - when the module defaulted to using
+the version 1 API regardless of the Confluence server used - now version
+2 will be auto-selected for Confluence >= 4.0.0.
+
+=item C<login ( URL, USER, PASS [, API_VERSION ] )>
+
+Alias for C<new>.
+
+=item C<getPageSummary( PAGE )>
+
+This method seems to have been added to the official API in Confluence 4.0.0 
+but it is undocumented in the XML/RPC and SOAP API docs.
+
+It is a more lightweight alternative to C<getPage()> since a C<PageSummary> 
+contains only a selection of the fields present in a full C<Page> object 
+(hashref). Notably the content of the page is not send back.
+
+You may use this method even with Confluence prior to 4.0 in which case
+C<getPage()> is called, retrieving a complete C<Page> object which is then
+stripped down to contain only the fields a C<PageSummary> provides.
+
+=item C<updatePage( PAGE [, PAGEUPDATEOPTIONS] )>
+
+Updates an already existing page with the data passed in in the C<Page>
+hashref. The C<Page> given should have id, space, title, content and version 
+fields at a minimum. 
+
+Dispatches to either the RPC API method that was introduced in Confluence
+2.10 or uses a combination of C<getPage> & C<storePage> to achieve a similar
+effect with older Confluence versions (but without page update options like
+version comments). 
+
+B<NOTE - INCOMPATIBLE CHANGE>: previous releases of this module provided a 
+method C<updatePage()> that was conceived before Confluence 2.10 introduced 
+the C<updatePage()> API method. Unlike the API method this shim also 
+allowed to create a new page (via C<storePage()>) if the caller did not 
+specify the page id.
+
+In order to bring the behavior of this module in line with the offcial API
+documentation C<Confluence::Client::XMLRPC> starting from v2.5 only allows 
+its C<updatePage()> method to update already existing pages.
+
+=item C<updateOrStorePage( PAGE [, PAGEUPDATEOPTIONS] )>
+
+Updates an existing page or - if the pages does not yet exist - creates a new
+page. 
+
+Uses either the C<id> attribute or the combination of C<space> and C<title> 
+from the C<Page> object (hashref) passed in as first argument to determine if
+an updateable page exists. If so, updates that page. Otherwise, stores a new 
+page. 
+
+The second param, C<PageUpdateOptions>, is used only if there is an
+updateable page and if the C<updatePage()> XML/RPC API method is available 
+(i.e. on Confluence 2.10 or newer). Otherwise, the param is simply ignored.
+
+B<NOTE:> Added in v2.5 of C<Confluence::Client::XMLRPC> this method is the 
+successor in behaviour to the C<updatePage()> as it was implemented in 
+earlier versions of this module. It is intended simply as a convenience 
+method. Unlike the API method C<storePage()> which also allows to either
+update or create a page it does not rely solely on page ids to identify
+existing pages but also tries to look up existing pages be C<space> and
+C<title>. Also unlike C<storePage()> the usage of C<PageUpdateOptions> is
+possible.
+
+=item C<setApiVersion( VERSION )>
+
+Sets the API version to use. See section B<API VERSIONS> below for more
+information on the different API versions and the consequences of using
+one or the other.
+
+=item C<setRaiseError( BOOL )>, C<setPrintError( BOOL )>
+
+See section B<ERROR HANDLING> below.
+
+=back
+
+All other method calls are simply mapped (via C<AUTOLOAD>) to RPC method 
+calls. 
+
+Please refer to the official
+L<list of available methods|https://developer.atlassian.com/display/CONFDEV/Remote+Confluence+Methods>
 for further information.
+
+Please refer to the 
+L<list of data objects|https://developer.atlassian.com/display/CONFDEV/Remote+Confluence+Data+Objects>
+for information on the structure of return values and arguments.
 
 The module tries to automatically map between the data types mentioned in 
 the Atlassian docs and the appropriate Perl data types:
@@ -350,7 +529,7 @@ can be used to determine if an error occurred.
       say $e;
   }
 
-=head1 Debugging
+=head1 DEBUGGING
 
 You can get more info about the communication between your client and the
 API by setting the environment variable C<CONFLDEBUG> to a true value.
@@ -375,8 +554,9 @@ API version in this module still is B<1>.
 
 Note: you can use B<most but not all> of the version 1 API calls on newer 
 Confluence installations! The Confluence docs contain a detailed and 
-authoritative description of 
-L<the differences between versions 1 and 2 of the API|https://developer.atlassian.com/display/CONFDEV/Confluence+XML-RPC+and+SOAP+APIs#ConfluenceXML-RPCandSOAPAPIs-v2apiRemoteAPIversion1andversion2>!
+authoritative description of the
+L<differences between versions 1 and 2|https://developer.atlassian.com/display/CONFDEV/Confluence+XML-RPC+and+SOAP+APIs#ConfluenceXML-RPCandSOAPAPIs-v2apiRemoteAPIversion1andversion2>
+of the API!
 
 The new version 2 API implements the same methods as the version 1 API, 
 however all content is stored and retrieved using the storage format. 
@@ -392,23 +572,6 @@ To aid in the migration phase Confluence 4.0 and up provide a method
 C<convertWikiToStorageFormat()> where you can pass in a string with 
 wiki markup and will recieve the same data converted to the new storage 
 format (which you can then use to create or update a page).
-
-=head1 API extension
-
-=over 4
-
-=item updatePage
-
-This package has a function called C<updatePage> which is not part of the 
-original remote API. If the page id is not specified then the function will 
-call C<storePage> to do an insert. 
-If an "already exists" error is encountered then the function will call 
-C<getPage> to retrieve the page id and version, and then repeat the 
-C<storePage> attempt. This function is intended to be used in situations 
-where the intent is to upload pages, overwriting existing content if it 
-exists. See example below.
-
-=back
 
 =head1 EXAMPLES
 

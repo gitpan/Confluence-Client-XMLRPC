@@ -25,7 +25,7 @@ my %WriteMakefileArgs = (
     "RPC::XML" => 0
   },
   "TEST_REQUIRES" => {},
-  "VERSION" => "2.4",
+  "VERSION" => "2.5",
   "test" => {
     "TESTS" => "t/*.t"
   }
